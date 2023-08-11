@@ -1,15 +1,14 @@
 package com.ldldevelopers.lox;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 class Parser {
-    private static class ParseError extends RuntimeException {}
-
     private final List<Token> tokens;
     private int current = 0;
-
     Parser(List<Token> tokens) {
         this.tokens = tokens;
     }
@@ -39,10 +38,76 @@ class Parser {
     }
 
     private Stmt statement() {
+        if (match(TokenType.FOR)) return forStatement();
+        if (match(TokenType.IF)) return ifStatement();
         if (match(TokenType.PRINT)) return printStatement();
+        if (match(TokenType.WHILE)) return whileStatement();
         if (match(TokenType.LEFT_BRACE)) return new Stmt.Block(block());
 
         return expressionStatement();
+    }
+    
+    private Stmt forStatement() {
+        consume(TokenType.LEFT_PAREN, "Expect '(' after 'for'.");
+        
+        Stmt initializer;
+        if (match(TokenType.SEMICOLON)) {
+            initializer = null;
+        } else if (match(TokenType.VAR)) {
+            initializer = varDeclaration();
+        } else {
+            initializer = expressionStatement();
+        }
+        
+        Expr condition = null;
+        if (!check(TokenType.SEMICOLON)) {
+            condition = expression();
+        }
+        consume(TokenType.SEMICOLON, "Expect ';' after loop condition.");
+        
+        Expr increment = null;
+        if (!check(TokenType.RIGHT_PAREN)) {
+            increment = expression();
+        }
+        consume(TokenType.RIGHT_PAREN, "Expect ')' after for clauses.");
+        Stmt body = statement();
+        
+        if (increment != null) {
+            body = new Stmt.Block(
+                Arrays.asList(
+                    body,
+                    new Stmt.Expression(increment)
+                )
+            );
+        }
+        
+        if (condition == null) condition = new Expr.Literal(true);
+        body = new Stmt.While(condition, body);
+        
+        if (initializer != null) {
+            body = new Stmt.Block(
+                Arrays.asList(
+                    initializer,
+                    body
+                )
+            );
+        }
+        
+        return body;
+    }
+
+    private Stmt ifStatement() {
+        consume(TokenType.LEFT_PAREN, "Expect '(' after 'if'.");
+        Expr condition = expression();
+        consume(TokenType.RIGHT_PAREN, "Expect ')' after if condition.");
+
+        Stmt thenBranch = statement();
+        Stmt elseBranch = null;
+        if (match(TokenType.ELSE)) {
+            elseBranch = statement();
+        }
+
+        return new Stmt.If(condition, thenBranch, elseBranch);
     }
 
     private Stmt printStatement() {
@@ -51,6 +116,15 @@ class Parser {
         return new Stmt.Print(value);
     }
 
+    private Stmt whileStatement() {
+        consume(TokenType.LEFT_PAREN, "Expect '(' after 'while'.");
+        Expr condition = expression();
+        consume(TokenType.RIGHT_PAREN, "Expect ')' after while condition.");
+        Stmt body = statement();
+
+        return new Stmt.While(condition, body);
+    }
+ 
     private Stmt varDeclaration() {
         Token name = consume(TokenType.IDENTIFIER, "Expect variable name.");
 
@@ -81,7 +155,7 @@ class Parser {
     }
 
     private Expr assignment() {
-        Expr expr = equality();
+        Expr expr = or();
         if (match(TokenType.EQUAL)) {
             Token equals = previous();
             Expr value = assignment();
@@ -95,6 +169,20 @@ class Parser {
         }
 
         return expr;
+    }
+
+    private Expr or() {
+        return leftAssociativeLogicExpr(
+                this::and,
+                TokenType.OR
+        );
+    }
+
+    private Expr and() {
+        return leftAssociativeLogicExpr(
+                this::equality,
+                TokenType.AND
+        );
     }
 
     private Expr equality() {
@@ -132,12 +220,32 @@ class Parser {
     }
 
     private Expr leftAssociativeBinaryExpr(Supplier<Expr> higher, TokenType... types) {
+        return leftAssociativeExpr(
+                higher,
+                left -> operator -> right -> new Expr.Binary(left, operator, right),
+                types
+        );
+    }
+
+    private Expr leftAssociativeLogicExpr(Supplier<Expr> higher, TokenType type) {
+        return leftAssociativeExpr(
+                higher,
+                left -> operator -> right -> new Expr.Logical(left, operator, right),
+                type
+        );
+    }
+
+    private Expr leftAssociativeExpr(
+            Supplier<Expr> higher,
+            Function<Expr, Function<Token, Function<Expr, Expr>>> constructor,
+            TokenType... types
+    ) {
         Expr expr = higher.get();
 
         while (match(types)) {
             Token operator = previous();
             Expr right = higher.get();
-            expr = new Expr.Binary(expr, operator, right);
+            expr = constructor.apply(expr).apply(operator).apply(right);
         }
 
         return expr;
@@ -212,6 +320,7 @@ class Parser {
     private Token previous() {
         return tokens.get(current - 1);
     }
+
     private ParseError error(Token token, String message) {
         Lox.error(token, message);
         return new ParseError();
@@ -238,4 +347,6 @@ class Parser {
             advance();
         }
     }
+
+    private static class ParseError extends RuntimeException {}
 }
